@@ -1,17 +1,191 @@
+#linux内核学习笔记之文件系统
 [TOC]
-##linux内核学习笔记之文件系统
-###一、文件系统的安装和卸载
-####1.1 问题：
-* (1) 文件系统的安装完成了哪些工作？
-* (2) 文件系统的卸载完成了哪些工作
-* (3) 在某个目录节点安装了一个文件系统后，super_block和vfsmount与dentry关联起来的作用是什么？
+##一、文件系统的安装和卸载分析
+### 1.1 文件系统的安装
+####1.1.1 总领提纲
+文件系统的安装过程中，有几个重要的数据结构：
+ - *file_system_type* : 这个数据结构是VFS进入具体文件系统的一个转折点，因为该文件系统中有一个函数指针read_super，这个函指针用于将设备上的super_block读入内存，并且建立起VFS的super_block。该结构只是用于在安装时说明"如何安装该文件系统"的，并不作为被安装到安装节点的内容部分。
+ - *vfsmount* : 这个数据结构记录了目录节点上安装的文件系统详细信息。
+ - *super_block* : 这个数据结构可以说是一个文件系统对象实例，一旦某个目录节点与之关联起来，就可以说这个目录节点上挂载了该文件系统。
 
-####1.2 回答：
-* (1) 
-* (2) 卸载完成的工作有：将vfsmount从相关的list中移除，相关代码为
+另外，在安装文件系统之前，从设备文件层面看，一个块设备是可以被访问的。只不过这时候访问时只能当作一个特殊文件来读写，也就是说只是一个大的线性空间，或者说这时候的块设备只是一个容量极大的文件而已。但是安装了文件系统之后，整个文件系统作为块设备的代理，通过目录节点访问，这时候对块设备的管理就可以按照一定格式来管理，读写也是按照一定格式来读写，在文件系统的管理之下，块设备的灵活性极大。
+
+####1.1.2 代码分析
+文件系统的安装工作主要由do_mount函数完成。
+[[fs/super.c : 1338~1445 : do_mount]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/fs/super.c)
+```C 
+1338 long do_mount(char * dev_name, char * dir_name, char *type_page,
+1339                   unsigned long flags, void *data_page)
+1340 {
+1341         struct file_system_type * fstype;
+1342         struct nameidata nd;
+1343         struct vfsmount *mnt = NULL;
+1344         struct super_block *sb;
+1345         int retval = 0;
+1346 	     
+ 			 /* .......此处省略代码若干  */
+1385         /* ... filesystem driver... */
+1386         fstype = get_fs_type(type_page);
+1387         if (!fstype)
+1388                 return -ENODEV;
+1389 
+1390         /* ... and mountpoint. Do the lookup first to force automounting. */
+1391         if (path_init(dir_name,
+1392                       LOOKUP_FOLLOW|LOOKUP_POSITIVE|LOOKUP_DIRECTORY, &nd))
+1393                 retval = path_walk(dir_name, &nd);
+1394         if (retval)
+1395                 goto fs_out;
+1396 
+1397         /* get superblock, locks mount_sem on success */
+1398         if (fstype->fs_flags & FS_NOMOUNT)
+1399                 sb = ERR_PTR(-EINVAL);
+1400         else if (fstype->fs_flags & FS_REQUIRES_DEV)
+1401                 sb = get_sb_bdev(fstype, dev_name, flags, data_page);
+1402         else if (fstype->fs_flags & FS_SINGLE)
+1403                 sb = get_sb_single(fstype, flags, data_page);
+1404         else
+1405                 sb = get_sb_nodev(fstype, flags, data_page);
+1406 
+             /*......此处省略代码若干*/
+1414 
+1415         /* Refuse the same filesystem on the same mount point */
+1416         retval = -EBUSY;
+1417         if (nd.mnt && nd.mnt->mnt_sb == sb
+1418                    && nd.mnt->mnt_root == nd.dentry)
+1419                 goto fail;
+1420 
+1421         retval = -ENOENT;
+1422         if (!nd.dentry->d_inode)
+1423                 goto fail;
+1424         down(&nd.dentry->d_inode->i_zombie);
+1425         if (!IS_DEADDIR(nd.dentry->d_inode)) {
+1426                 retval = -ENOMEM;
+1427                 mnt = add_vfsmnt(&nd, sb->s_root, dev_name);
+1428         }
+1429         up(&nd.dentry->d_inode->i_zombie);
+1430         if (!mnt)
+1431                 goto fail;
+1432         retval = 0;
+             /*......此处省略代码若干*/
+1445 }
+```
+第一步：查找file_system_type
+1386： 系统支持的每种文件系统都有一个file_system_type结构用于描述和记录文件系统的一些特性。file_system_type定义于[[include/linux/fs.h : 839~846]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/include/linux/fs.h)，该结构在系统启动，或者是文件系统作为模块被加载进入内核时注册到一全局链表上。这里通过遍历该链表并且比对字符串从而查找到文件系统对应的file_system_type结构。
+
+第二步：查找安装点的dentry结构。
+1391～1393： 查找安装点的dentry结构，返回的nd.dentry即为根据路径名查找到的安装节点dentry。而nd.mnt是目前安装节点所在的文件系统的安装信息。
+
+第三步：将待安装文件系统的super_block读取进内存并且建立起VFS的super_block。
+1401 : 考虑非特殊文件系统的情况，调用get_sb_bdev读取超级块。该函数定义于[[fs/super.c : 785～847 : get_sb_bdev]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/fs/super.c)
+```C
+ 785 static struct super_block *get_sb_bdev(struct file_system_type *fs_type,
+ 786         char *dev_name, int flags, void * data)
+ 787 {
+ 788         struct inode *inode;
+ 789         struct block_device *bdev;
+ 790         struct block_device_operations *bdops;
+ 791         struct super_block * sb;
+ 792         struct nameidata nd;
+ 793         kdev_t dev;
+ 794         int error = 0;
+ 795         /* What device it is? */
+ 796         if (!dev_name || !*dev_name)
+ 797                 return ERR_PTR(-EINVAL);
+ 798         if (path_init(dev_name, LOOKUP_FOLLOW|LOOKUP_POSITIVE, &nd))
+ 799                 error = path_walk(dev_name, &nd);
+ 800         if (error)
+ 801                 return ERR_PTR(error);
+ 802         inode = nd.dentry->d_inode;
+ 803         error = -ENOTBLK;
+ 804         if (!S_ISBLK(inode->i_mode))
+ 805                 goto out;
+ 806         error = -EACCES;
+ 807         if (IS_NODEV(inode))
+ 808                 goto out;
+ 809         bdev = inode->i_bdev;
+ 810         bdops = devfs_get_ops ( devfs_get_handle_from_inode (inode) );
+ 811         if (bdops) bdev->bd_op = bdops;
+ 812         /* Done with lookups, semaphore down */
+ 813         down(&mount_sem);
+ 814         dev = to_kdev_t(bdev->bd_dev);
+ 815         sb = get_super(dev);
+ 816         if (sb) {
+ 817                 if (fs_type == sb->s_type &&
+ 818                     ((flags ^ sb->s_flags) & MS_RDONLY) == 0) {
+ 819                         path_release(&nd);
+ 820                         return sb;
+ 821                 }
+ 822         } else {
+ 823                 mode_t mode = FMODE_READ; /* we always need it ;-) */
+ 824                 if (!(flags & MS_RDONLY))
+ 825                         mode |= FMODE_WRITE;
+ 826                 error = blkdev_get(bdev, mode, 0, BDEV_FS);
+ 827                 if (error)
+ 828                         goto out;
+ 829                 check_disk_change(dev);
+ 830                 error = -EACCES;
+ 831                 if (!(flags & MS_RDONLY) && is_read_only(dev))
+ 832                         goto out1;
+ 833                 error = -EINVAL;
+ 834                 sb = read_super(dev, bdev, fs_type, flags, data, 0);
+ 835                 if (sb) {
+ 836                         get_filesystem(fs_type);
+ 837                         path_release(&nd);
+ 838                         return sb;
+ 839                 }
+ 840 out1:
+ 841                 blkdev_put(bdev, BDEV_FS);
+ 842         }
+ 843 out:
+ 844         path_release(&nd);
+ 845         up(&mount_sem);
+ 846         return ERR_PTR(error);
+ 847 }
+
+```
+
+##二、思考问题
+###2.1 问题：
+* (1) 文件系统安装意味这什么？
+* (2) 文件系统的安装完成了哪些工作？
+* (3) 在某个目录节点安装了一个文件系统后，super_block和vfsmount与dentry关联起来的作用是什么？
+* (4) 文件系统的卸载完成了哪些工作
+
+###2.2 回答：
++ (1) 
++ (2)
++ (3)卸载完成的工作有：
+ - 将vfsmount从相关的list中移除
+ [[fs/super.c : 411~428 : remove_vfsmnt]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/fs/super.c)
 ```C         
+ 411 static void remove_vfsmnt(struct vfsmount *mnt)
+ 412 {
+ 413         /* First of all, remove it from all lists */
  414         list_del(&mnt->mnt_instances);
  415         list_del(&mnt->mnt_clash);
  416         list_del(&mnt->mnt_list);
  417         list_del(&mnt->mnt_child);
+ 418         spin_unlock(&dcache_lock);
+			 .....
+ 428 }             
 ```
+414：将vsfmount从该文件系统super_block->s_mounts维护的vsfmount链表中删除。
+415：将vsfmount从该安装节点dentry->d_vfsmnt维护的vsfmount链表中删除。
+416：将vsfmount从其父设备，即上一层目录的文件系统维护的mnt_child链表中删除
+417：将vsfmount从内核维护的全局mnt_list链表中删除。
+ 
+ - 释放所有该文件系统的dentry
+[[fs/super.c : 1103]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/fs/super.c)
+```C	
+1103         shrink_dcache_sb(sb);
+```
+ - 将该文件系统的super_block以及所有的inode。
+```C	
+1105         fsync_dev(sb->s_dev);
+```
+
+这样，文件系统卸载后，原来的安装节点dentry依然还在，但是由于
+
+
+
+

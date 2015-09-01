@@ -327,6 +327,12 @@ static struct vfsmount *add_vfsmnt(struct nameidata *nd,
 			mnt->mnt_devname = name;
 		}
 	}
+
+	/*填充vfsmount 结构*/
+	/*
+	 *注：dentry中的sb并不是指向该目录下挂载设备的super_block，而是	  
+	 *    指向了dentry所在的设备的super_block
+	 * */
 	mnt->mnt_owner = current->uid;
 	atomic_set(&mnt->mnt_count,1);
 	mnt->mnt_sb = sb;
@@ -335,17 +341,31 @@ static struct vfsmount *add_vfsmnt(struct nameidata *nd,
 	if (nd && !IS_ROOT(nd->dentry) && d_unhashed(nd->dentry))
 		goto fail;
 	mnt->mnt_root = dget(root);
+	/*
+	 * 如果nd结构不为空，则安装到它的dentry中，这里是do_mount中指定的安装节点
+	 * 否则就安装到super_block的root内，这里是作为根目录来安装的。
+	 * */
 	mnt->mnt_mountpoint = nd ? dget(nd->dentry) : dget(root);
+	/*如果nd中有mnt，即安装待安装文件系统之前安装节点处在另一个文件系统内，则该
+	 * 文件系统就是待安装文件系统的父系统*/
 	mnt->mnt_parent = nd ? mntget(nd->mnt) : mnt;
 
+	
 	if (nd) {
+		/*vfsmount注册到父文件系统的mnt_mounts链表上*/
 		list_add(&mnt->mnt_child, &nd->mnt->mnt_mounts);
+		/*vfsmount注册到安装节点dentry的d_vfsmnt上*/
 		list_add(&mnt->mnt_clash, &nd->dentry->d_vfsmnt);
 	} else {
 		INIT_LIST_HEAD(&mnt->mnt_child);
 		INIT_LIST_HEAD(&mnt->mnt_clash);
 	}
+	/*初始化vfsmount->mnt_mounts，该链表上以后可以挂接该文件系统的子文件系统
+	 *即有另外的文件系统可能会被安装到该文件系统的某个子目录下
+	 * */
 	INIT_LIST_HEAD(&mnt->mnt_mounts);
+	/*vfsmount注册到super_block的s_mounts上，因为同一个设备可能会被安装到多个
+	 * 目录节点下*/
 	list_add(&mnt->mnt_instances, &sb->s_mounts);
 	list_add(&mnt->mnt_list, vfsmntlist.prev);
 	spin_unlock(&dcache_lock);
@@ -726,6 +746,8 @@ static struct super_block * read_super(kdev_t dev, struct block_device *bdev,
 	s = get_empty_super();
 	if (!s)
 		goto out;
+
+	/*先作一些VSF层的相关初始化*/
 	s->s_dev = dev;
 	s->s_bdev = bdev;
 	s->s_flags = flags;
@@ -737,6 +759,7 @@ static struct super_block * read_super(kdev_t dev, struct block_device *bdev,
 	sema_init(&s->s_dquot.dqoff_sem, 1);
 	s->s_dquot.flags = 0;
 	lock_super(s);
+	/*读入具体文件系统的super_block*/
 	if (!type->read_super(s, data, silent))
 		goto out_fail;
 	unlock_super(s);
@@ -799,6 +822,9 @@ static struct super_block *get_sb_bdev(struct file_system_type *fs_type,
 		error = path_walk(dev_name, &nd);
 	if (error)
 		return ERR_PTR(error);
+	/*
+	 * 查找到待安装文件系统所在的设备文件dentry对象 
+	 * */
 	inode = nd.dentry->d_inode;
 	error = -ENOTBLK;
 	if (!S_ISBLK(inode->i_mode))
@@ -806,12 +832,15 @@ static struct super_block *get_sb_bdev(struct file_system_type *fs_type,
 	error = -EACCES;
 	if (IS_NODEV(inode))
 		goto out;
+	/*获取设备对象*/
 	bdev = inode->i_bdev;
+	/*获取操作函数表*/
 	bdops = devfs_get_ops ( devfs_get_handle_from_inode (inode) );
 	if (bdops) bdev->bd_op = bdops;
 	/* Done with lookups, semaphore down */
 	down(&mount_sem);
 	dev = to_kdev_t(bdev->bd_dev);
+	/*查找内存中该文件系统的super_block*/
 	sb = get_super(dev);
 	if (sb) {
 		if (fs_type == sb->s_type &&
@@ -820,9 +849,11 @@ static struct super_block *get_sb_bdev(struct file_system_type *fs_type,
 			return sb;
 		}
 	} else {
+	/*如果没有查找到的话，就需要从设备中读入*/		
 		mode_t mode = FMODE_READ; /* we always need it ;-) */
 		if (!(flags & MS_RDONLY))
 			mode |= FMODE_WRITE;
+		/*打开设备*/
 		error = blkdev_get(bdev, mode, 0, BDEV_FS);
 		if (error)
 			goto out;
@@ -831,6 +862,7 @@ static struct super_block *get_sb_bdev(struct file_system_type *fs_type,
 		if (!(flags & MS_RDONLY) && is_read_only(dev))
 			goto out1;
 		error = -EINVAL;
+		/*读入超级块*/		
 		sb = read_super(dev, bdev, fs_type, flags, data, 0);
 		if (sb) {
 			get_filesystem(fs_type);
@@ -1394,6 +1426,8 @@ long do_mount(char * dev_name, char * dir_name, char *type_page,
 	if (retval)
 		goto fs_out;
 
+	/*获取待安装文件系统的超级块，一般都是从设备中读入*/
+
 	/* get superblock, locks mount_sem on success */
 	if (fstype->fs_flags & FS_NOMOUNT)
 		sb = ERR_PTR(-EINVAL);
@@ -1424,6 +1458,7 @@ long do_mount(char * dev_name, char * dir_name, char *type_page,
 	down(&nd.dentry->d_inode->i_zombie);
 	if (!IS_DEADDIR(nd.dentry->d_inode)) {
 		retval = -ENOMEM;
+		/*开始安装，nd是安装查找安装节点返回的nd结构*/
 		mnt = add_vfsmnt(&nd, sb->s_root, dev_name);
 	}
 	up(&nd.dentry->d_inode->i_zombie);
