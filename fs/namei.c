@@ -419,6 +419,12 @@ static inline void follow_dotdot(struct nameidata *nd)
  *
  * We expect 'base' to be positive and a directory.
  */
+
+/*
+ * 改函数用来查找对应路径名的dentry和vfsmnt，当给定一个路径名
+ * 时，nd作为返回值包括了该路径名对应的dentry对象和dentry上的
+ * vfsmount对象。
+ * */
 int path_walk(const char * name, struct nameidata *nd)
 {
 	struct dentry *dentry;
@@ -500,6 +506,7 @@ int path_walk(const char * name, struct nameidata *nd)
 				break;
 		}
 		/* Check mountpoints.. */
+		/*如果该节点是一个挂载节点，则前进到挂载设备的根目录中去*/
 		while (d_mountpoint(dentry) && __follow_down(&nd->mnt, &dentry))
 			;
 

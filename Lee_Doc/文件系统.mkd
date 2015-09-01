@@ -77,73 +77,66 @@
 
 第三步：将待安装文件系统的super_block读取进内存并且建立起VFS的super_block。
 1401 : 考虑非特殊文件系统的情况，调用get_sb_bdev读取超级块。该函数定义于[[fs/super.c : 785～847 : get_sb_bdev]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/fs/super.c)
+
+第四步：开始安装，连接dentry--->vfsmount--->super_block
 ```C
- 785 static struct super_block *get_sb_bdev(struct file_system_type *fs_type,
- 786         char *dev_name, int flags, void * data)
- 787 {
- 788         struct inode *inode;
- 789         struct block_device *bdev;
- 790         struct block_device_operations *bdops;
- 791         struct super_block * sb;
- 792         struct nameidata nd;
- 793         kdev_t dev;
- 794         int error = 0;
- 795         /* What device it is? */
- 796         if (!dev_name || !*dev_name)
- 797                 return ERR_PTR(-EINVAL);
- 798         if (path_init(dev_name, LOOKUP_FOLLOW|LOOKUP_POSITIVE, &nd))
- 799                 error = path_walk(dev_name, &nd);
- 800         if (error)
- 801                 return ERR_PTR(error);
- 802         inode = nd.dentry->d_inode;
- 803         error = -ENOTBLK;
- 804         if (!S_ISBLK(inode->i_mode))
- 805                 goto out;
- 806         error = -EACCES;
- 807         if (IS_NODEV(inode))
- 808                 goto out;
- 809         bdev = inode->i_bdev;
- 810         bdops = devfs_get_ops ( devfs_get_handle_from_inode (inode) );
- 811         if (bdops) bdev->bd_op = bdops;
- 812         /* Done with lookups, semaphore down */
- 813         down(&mount_sem);
- 814         dev = to_kdev_t(bdev->bd_dev);
- 815         sb = get_super(dev);
- 816         if (sb) {
- 817                 if (fs_type == sb->s_type &&
- 818                     ((flags ^ sb->s_flags) & MS_RDONLY) == 0) {
- 819                         path_release(&nd);
- 820                         return sb;
- 821                 }
- 822         } else {
- 823                 mode_t mode = FMODE_READ; /* we always need it ;-) */
- 824                 if (!(flags & MS_RDONLY))
- 825                         mode |= FMODE_WRITE;
- 826                 error = blkdev_get(bdev, mode, 0, BDEV_FS);
- 827                 if (error)
- 828                         goto out;
- 829                 check_disk_change(dev);
- 830                 error = -EACCES;
- 831                 if (!(flags & MS_RDONLY) && is_read_only(dev))
- 832                         goto out1;
- 833                 error = -EINVAL;
- 834                 sb = read_super(dev, bdev, fs_type, flags, data, 0);
- 835                 if (sb) {
- 836                         get_filesystem(fs_type);
- 837                         path_release(&nd);
- 838                         return sb;
- 839                 }
- 840 out1:
- 841                 blkdev_put(bdev, BDEV_FS);
- 842         }
- 843 out:
- 844         path_release(&nd);
- 845         up(&mount_sem);
- 846         return ERR_PTR(error);
- 847 }
+1427  mnt = add_vfsmnt(&nd, sb->s_root, dev_name);
+```
+调用add_vfsmnt函数进行文件系统的安装，实际上是利用vfsmount结构将安装节点和super_block关联起来。调用完后dentry->d_vfsmnt链表上挂接有vfsmount，vfsmount->mnt_mountpoint = dentry,vfsmount->mnt_root = super_block->s_root。dentry、vfsmount、super_block如图所示：  
+
+![](http://my.csdn.net/uploads/201205/14/1337004305_1232.gif)
+
+*(链接后的dentry、vfsmount、super_block之间的关系，详情请参考[这篇文章](http://blog.csdn.net/mishifangxiangdefeng/article/details/7566575))*
+
+####1.1.3 实例考察path_walk
+当一个目录节点/home/User/dir被挂接了一个设备时，当利用路径查找/dir下文件时会是如何的呢？path_walk相关部分如下。
+[[fs/namei.c : 501~511 : path_walk]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/fs/namei.c)
+```C 
+ 501                 dentry = cached_lookup(nd->dentry, &this, LOOKUP_CONTINUE);
+ 502                 if (!dentry) {
+ 503                         dentry = real_lookup(nd->dentry, &this, LOOKUP_CONTINUE);
+ 504                         err = PTR_ERR(dentry);
+ 505                         if (IS_ERR(dentry))
+ 506                                 break;
+ 507                 }
+ 508                 /* Check mountpoints.. */
+ 509                 /*如果该节点是一个挂载节点，则前进到挂载设备的根目录中去*/
+ 510                 while (d_mountpoint(dentry) && __follow_down(&nd->mnt, &dentry))
+ 511                         ;
+```
+510 : 调用d_mountpoint检查该节点是不是挂载节点，如果是挂载节点就进入被挂载设备的根节点中，用挂载设备的根节点替代这次查找得到的dentry。逻辑上与该语句等效`dentry = nd->mnt->mnt_root`。d_mountpoint和__follow_down分别定义于[[include/linux/dcache.h : 261]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/linux/dcache.h)和[[fs/namei.c : 352]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/fs/namei.c)
+```C
+[include/linux/dcache.h : 261]
+261 static __inline__ int d_mountpoint(struct dentry *dentry)
+262 { 
+263         return !list_empty(&dentry->d_vfsmnt);
+264 }
+
+[fs/namei.c : 352]
+ 352 static inline int __follow_down(struct vfsmount **mnt, struct dentry **dentry)
+ 353 { 
+ 354         struct list_head *p;
+ 355         spin_lock(&dcache_lock);
+ 356         p = (*dentry)->d_vfsmnt.next;
+ 357         while (p != &(*dentry)->d_vfsmnt) {
+ 358                 struct vfsmount *tmp;
+ 359                 tmp = list_entry(p, struct vfsmount, mnt_clash);
+ 360                 if (tmp->mnt_parent == *mnt) {
+ 361                         *mnt = mntget(tmp);
+ 362                         spin_unlock(&dcache_lock);
+ 363                         mntput(tmp->mnt_parent);
+ 364                         /* tmp holds the mountpoint, so... */
+ 365                         dput(*dentry);
+ 366                         *dentry = dget(tmp->mnt_root);
+ 367                         return 1;
+ 368                 }
+ 369                 p = p->next;
+ 370         }
+ 371         spin_unlock(&dcache_lock);
+ 372         return 0;
+ 373 }
 
 ```
-
 ##二、思考问题
 ###2.1 问题：
 * (1) 文件系统安装意味这什么？
