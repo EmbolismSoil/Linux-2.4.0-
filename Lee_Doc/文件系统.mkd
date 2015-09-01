@@ -1,0 +1,17 @@
+[TOC]
+##linux内核学习笔记之文件系统
+###一、文件系统的安装和卸载
+####1.1 问题：
+* (1) 文件系统的安装完成了哪些工作？
+* (2) 文件系统的卸载完成了哪些工作
+* (3) 在某个目录节点安装了一个文件系统后，super_block和vfsmount与dentry关联起来的作用是什么？
+
+####1.2 回答：
+* (1) 
+* (2) 卸载完成的工作有：将vfsmount从相关的list中移除，相关代码为
+```C         
+ 414         list_del(&mnt->mnt_instances);
+ 415         list_del(&mnt->mnt_clash);
+ 416         list_del(&mnt->mnt_list);
+ 417         list_del(&mnt->mnt_child);
+```

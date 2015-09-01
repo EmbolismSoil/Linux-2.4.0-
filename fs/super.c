@@ -1079,7 +1079,8 @@ static int do_umount(struct vfsmount *mnt, int umount_root, int flags)
 	 * must return, and the like. Thats for the mount program to worry
 	 * about for the moment.
 	 */
-
+	
+	//如果文件系统提供了sb->s_op->umount_begin则调用之，为开始卸载做准备
 	if( (flags&MNT_FORCE) && sb->s_op->umount_begin)
 		sb->s_op->umount_begin(sb);
 
@@ -1089,9 +1090,19 @@ static int do_umount(struct vfsmount *mnt, int umount_root, int flags)
 	 * root entry should be in use and (b) that root entry is
 	 * clean.
 	 */
-	shrink_dcache_sb(sb);
-	fsync_dev(sb->s_dev);
 
+	//释放所有ununed_list中的dentry结构。
+
+	/*
+	 * 注：当一个dentry在内存中建立起来之后，每当被使用一次，则其引用计数加1，被用完之后引用计数减1
+	 *     直到一个dentry引用计数变为0之后，说明该当前已经没有进程使用该dentry了，但根据程序的局部性
+	 *     原理，该dentry不会被马上释放掉，而是被链入由LRU管理的unused_list队列当中，因为它很可能又会
+	 *     被再次使用，它会一直在该队列中直到被再次使用或者被LRU回收。当文件系统被卸载时，所有属于该
+	 *     文件系统的dentry都会被立即回收，而不会等到被LRU回收。
+	 * */
+	shrink_dcache_sb(sb);
+	//立即将内容回写到设备
+	fsync_dev(sb->s_dev);
 	if (sb->s_root->d_inode->i_state) {
 		mntput(mnt);
 		return -EBUSY;
@@ -1122,6 +1133,12 @@ static int do_umount(struct vfsmount *mnt, int umount_root, int flags)
  * unixes. Our API is identical to OSF/1 to avoid making a mess of AMD
  */
 
+/*
+ * 卸载文件系统：就是将vfsmount从相应的链表中删除,
+ *
+ *
+ *
+ * */
 asmlinkage long sys_umount(char * name, int flags)
 {
 	struct nameidata nd;
