@@ -230,10 +230,10 @@
  418         spin_unlock(&dcache_lock);
 			 /*.....此处省略代码若干*/
  428 }             
-```
-414：将vsfmount从该文件系统super_block->s_mounts维护的vsfmount链表中删除。
-415：将vsfmount从该安装节点dentry->d_vfsmnt维护的vsfmount链表中删除。
-416：将vsfmount从其父设备，即上一层目录的文件系统维护的mnt_child链表中删除
+```  
+414：将vsfmount从该文件系统super_block->s_mounts维护的vsfmount链表中删除。  
+415：将vsfmount从该安装节点dentry->d_vfsmnt维护的vsfmount链表中删除。  
+416：将vsfmount从其父设备，即上一层目录的文件系统维护的mnt_child链表中删除  
 417：将vsfmount从内核维护的全局mnt_list链表中删除。
  
 第二步： 释放所有该文件系统的dentry
