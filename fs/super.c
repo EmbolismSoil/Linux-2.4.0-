@@ -431,10 +431,10 @@ static void move_vfsmnt(struct vfsmount *mnt,
 static void remove_vfsmnt(struct vfsmount *mnt)
 {
 	/* First of all, remove it from all lists */
-	list_del(&mnt->mnt_instances);
-	list_del(&mnt->mnt_clash);
-	list_del(&mnt->mnt_list);
-	list_del(&mnt->mnt_child);
+	list_del(&mnt->mnt_instances);//从super_block链表中移除
+	list_del(&mnt->mnt_clash);//从dentry链表中移除
+	list_del(&mnt->mnt_list);//从全局vfsmount链表中移除
+	list_del(&mnt->mnt_child);//从父文件系统的链表中移除
 	spin_unlock(&dcache_lock);
 	/* Now we can work safely */
 	if (mnt->mnt_parent != mnt)
@@ -1077,7 +1077,10 @@ static int do_umount(struct vfsmount *mnt, int umount_root, int flags)
 
 	spin_lock(&dcache_lock);
 	
-	//
+	/*
+	 * 如果该文件系统被安装多次，并且引用技术大于2 ，说明还有其它的目录
+	 * 节点挂载了该文件系统，这时只需要移除vfsmount即可，不做回收工作
+	 * */
 	if (mnt->mnt_instances.next != mnt->mnt_instances.prev) {
 		if (atomic_read(&mnt->mnt_count) > 2) {
 			spin_unlock(&dcache_lock);
@@ -1088,6 +1091,7 @@ static int do_umount(struct vfsmount *mnt, int umount_root, int flags)
 			put_filesystem(sb->s_type);
 		/* We hold two references, so mntput() is safe */
 		mntput(mnt);
+		/*移除vfsmount*/
 		remove_vfsmnt(mnt);
 		return 0;
 	}
@@ -1112,7 +1116,7 @@ static int do_umount(struct vfsmount *mnt, int umount_root, int flags)
 	 * about for the moment.
 	 */
 	
-	//如果文件系统提供了sb->s_op->umount_begin则调用之，为开始卸载做准备
+	//如果文件系统提供了sb->s_op->umount_begin则调用之，为开始卸载做准备	
 	if( (flags&MNT_FORCE) && sb->s_op->umount_begin)
 		sb->s_op->umount_begin(sb);
 
@@ -1123,15 +1127,19 @@ static int do_umount(struct vfsmount *mnt, int umount_root, int flags)
 	 * clean.
 	 */
 
-	//释放所有ununed_list中的dentry结构。
 
 	/*
-	 * 注：当一个dentry在内存中建立起来之后，每当被使用一次，则其引用计数加1，被用完之后引用计数减1
-	 *     直到一个dentry引用计数变为0之后，说明该当前已经没有进程使用该dentry了，但根据程序的局部性
-	 *     原理，该dentry不会被马上释放掉，而是被链入由LRU管理的unused_list队列当中，因为它很可能又会
-	 *     被再次使用，它会一直在该队列中直到被再次使用或者被LRU回收。当文件系统被卸载时，所有属于该
+	 * 注：当一个dentry在内存中建立起来之后，每当被使用一次，
+	 *     则其引用计数加1，被用完之后引用计数减1直到
+	 *     一个dentry引用计数变为0之后，说明该当前已经
+	 *     没有进程使用该dentry了，但根据程序的局部性
+	 *     原理，该dentry不会被马上释放掉，而是被链入
+	 *     由LRU管理的unused_list队列当中，因为它很可能又会
+	 *     被再次使用，它会一直在该队列中直到被再次使用或者
+	 *     被LRU回收。当文件系统被卸载时，所有属于该
 	 *     文件系统的dentry都会被立即回收，而不会等到被LRU回收。
 	 * */
+	//释放所有ununed_list中的dentry结构。
 	shrink_dcache_sb(sb);
 	//立即将内容回写到设备
 	fsync_dev(sb->s_dev);
