@@ -2380,8 +2380,10 @@ static inline struct page * __grab_cache_page(struct address_space *mapping,
 {
 	struct page *page, **hash = page_hash(mapping, index);
 repeat:
+	/*从stask_struct 的address_space中查找page*/
 	page = __find_lock_page(mapping, index, hash);
 	if (!page) {
+		/*如果没有查找到，就分配一个*/
 		if (!*cached_page) {
 			*cached_page = page_cache_alloc();
 			if (!*cached_page)
@@ -2467,6 +2469,7 @@ generic_file_write(struct file *file,const char *buf,size_t count,loff_t *ppos)
 
 	written = 0;
 
+	/*如果设置了APPEN位，则在文件尾部追加，即把文件的当前位置设到文件末尾*/
 	if (file->f_flags & O_APPEND)
 		pos = inode->i_size;
 
@@ -2475,6 +2478,7 @@ generic_file_write(struct file *file,const char *buf,size_t count,loff_t *ppos)
 	 */
 	err = -EFBIG;
 	if (limit != RLIM_INFINITY) {
+		/*查看资源限制，文件长度大于限制，则发送信号中止写过程*/
 		if (pos >= limit) {
 			send_sig(SIGXFSZ, current, 0);
 			goto out;
@@ -2502,6 +2506,7 @@ generic_file_write(struct file *file,const char *buf,size_t count,loff_t *ppos)
 		 * allocate a free page.
 		 */
 		offset = (pos & (PAGE_CACHE_SIZE -1)); /* Within page */
+		/*需要读写的位置除以页面的大小，得到的就是页面索引，也就是第几个页面*/
 		index = pos >> PAGE_CACHE_SHIFT;
 		bytes = PAGE_CACHE_SIZE - offset;
 		if (bytes > count) {
@@ -2521,6 +2526,7 @@ generic_file_write(struct file *file,const char *buf,size_t count,loff_t *ppos)
 		}
 
 		status = -ENOMEM;	/* we'll assign it later anyway */
+		/*找到页面,如果不存在就分配一个空白页面*/
 		page = __grab_cache_page(mapping, index, &cached_page);
 		if (!page)
 			break;
@@ -2529,11 +2535,14 @@ generic_file_write(struct file *file,const char *buf,size_t count,loff_t *ppos)
 		if (!PageLocked(page)) {
 			PAGE_BUG(page);
 		}
-
+		
+		/*准备写入*/
 		status = mapping->a_ops->prepare_write(file, page, offset, offset+bytes);
 		if (status)
 			goto unlock;
+		/*得页面的到内核地址*/
 		kaddr = page_address(page);
+		/*将内容写入缓冲页面*/
 		status = copy_from_user(kaddr+offset, buf, bytes);
 		flush_dcache_page(page);
 		if (status)

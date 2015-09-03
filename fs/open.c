@@ -617,11 +617,14 @@ struct file *filp_open(const char * filename, int flags, int mode)
 	struct nameidata nd;
 
 	namei_flags = flags;
+	/*
+	 * flag转换，因为open_namei对flag的约定与open调用不一致，所以需要作一些转换
+	 * */
 	if ((namei_flags+1) & O_ACCMODE)
 		namei_flags++;
 	if (namei_flags & O_TRUNC)
 		namei_flags |= 2;
-
+	/*通过路径名找到一个nd结构，即dentry和vfsmount*/
 	error = open_namei(filename, namei_flags, mode, &nd);
 	if (!error)
 		return dentry_open(nd.dentry, nd.mnt, flags);
@@ -751,6 +754,7 @@ asmlinkage long sys_open(const char * filename, int flags, int mode)
 	tmp = getname(filename);
 	fd = PTR_ERR(tmp);
 	if (!IS_ERR(tmp)) {
+		/*获取一个未使用的fd号*/
 		fd = get_unused_fd();
 		if (fd >= 0) {
 			struct file *f = filp_open(tmp, flags, mode);

@@ -24,6 +24,10 @@ static inline block_t *block_end(struct buffer_head *bh)
 	return (block_t *)((char*)bh->b_data + BLOCK_SIZE);
 }
 
+/*
+ *将块映射链整个读入，再根据映射链的关系找出最后一个映射链
+ *指向的块索引
+ * */
 static inline Indirect *get_branch(struct inode *inode,
 					int depth,
 					int *offsets,

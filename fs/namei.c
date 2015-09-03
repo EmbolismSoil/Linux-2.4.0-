@@ -956,6 +956,10 @@ int open_namei(const char * pathname, int flag, int mode, struct nameidata *nd)
 	/*
 	 * The simplest case - just a plain lookup.
 	 */
+	/*
+	 * 如果没有选择O_CREAT标示，说明查找不到文件也无需
+	 * 创建，直接返回即可。
+	 * */
 	if (!(flag & O_CREAT)) {
 		if (path_init(pathname, lookup_flags(flag), nd))
 			error = path_walk(pathname, nd);
@@ -966,6 +970,7 @@ int open_namei(const char * pathname, int flag, int mode, struct nameidata *nd)
 	}
 
 	/*
+	 * 因为这里选择了创建文件，所以得先查找到其被创建的目录
 	 * Create - we need to know the parent.
 	 */
 	if (path_init(pathname, LOOKUP_PARENT, nd))
@@ -982,8 +987,15 @@ int open_namei(const char * pathname, int flag, int mode, struct nameidata *nd)
 	if (nd->last_type != LAST_NORM || nd->last.name[nd->last.len])
 		goto exit;
 
+	/*
+	 * 这里查找到的是目标文件所在的目录，而不是直接
+	 * 查找目标文件
+	 * */
 	dir = nd->dentry;
 	down(&dir->d_inode->i_sem);
+	/*
+	 * 在该目录里查找文件
+	 * */
 	dentry = lookup_hash(&nd->last, nd->dentry);
 
 do_last:
@@ -994,7 +1006,9 @@ do_last:
 	}
 
 	/* Negative dentry, just create the file */
+	/*如果没有查找到该文件，则说明需要创建*/
 	if (!dentry->d_inode) {
+		/*如果没有找到，则创建该文件*/
 		error = vfs_create(dir->d_inode, dentry, mode);
 		up(&dir->d_inode->i_sem);
 		dput(nd->dentry);
@@ -1008,11 +1022,15 @@ do_last:
 	}
 
 	/*
+	 * 如果已经查找到该文件
+	 * */
+	/*
 	 * It already exists.
 	 */
 	up(&dir->d_inode->i_sem);
 
 	error = -EEXIST;
+	/*如果目标已经存在open的flag设置了O_EXCL，则出错返回*/
 	if (flag & O_EXCL)
 		goto exit_dput;
 
@@ -1020,6 +1038,7 @@ do_last:
 		error = -ELOOP;
 		if (flag & O_NOFOLLOW)
 			goto exit_dput;
+		/*如果此文件是一个安装节点，则一直跟踪到一个设备根目录为止*/
 		do __follow_down(&nd->mnt,&dentry); while(d_mountpoint(dentry));
 	}
 	error = -ENOENT;

@@ -1,0 +1,44 @@
+#Linux文件系统分析：文件的打开与读写
+[TOC]
+
+##一、文件的打开
+###1.1打开文件的本质
+文件的打开，本质上是建立起进程与文件之间的链接，也就是file结构，并且返回file结构的索引fd。使得进程能够通过file结构来对文件进行访问。
+###1.2打开文件的过程
++ (1) 从进程的task_struct中分配一个未使用的fd
++ (2) 通过路径名查找或者创建一个dentry
+ - 通过path_init、path_walk查找路径名对应的dentry
+ - 如果查找不到该路径名的dentry，并且设置了CREATE标志，则在路径名最后一个目录下创建该文件。
++ (3) 打开dentry,返回一个建立号的file结构
+ - 分配一个空闲的file结构
+ - 填充file中的VFS层信息，在这里复制了dentry->inode->i_fop
+ - 调用inode->i_fop打开设备
+ - 返回file结构
+
+函数调用链为：
+[[fs/open.c : 746 : sys_open]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/fs/open.c):
++ [[fs/open.c : 687 : get_unused_fd]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/fs/open.c)
++ [[fs/open.c : 614 : filp_open]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/fs/open.c)
+ - [[fs/namei.c : 946 : open_namei]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/fs/namei.c)
+ - [[fs/open.c : 635 : dentry_open]](https://github.com/EmbolismSoil/Linux-2.4.0-)
+
+##二、文件创建
+在1.2的分析中，我们知道，在open_namei函数中，一旦查找路径名对应的dentry不存在的时候，就要在路径名最后一个目录下创建该文件。现在来分析文件创建的过程。
+###2.1 文件创建的过程
++ (1) 调用lookup_hash在父目录下搜索dentry,考虑到这里是创建文件的情况这里会搜索不到，所以在内存中分配一个dentry
++ (2) 调用vfs_create创建文件
+	- 调用父目录的dentry->inode->i_op->create创建一个文件。
+	 - dentry->inode->i_op->create创建一个文件
+	   - 调用ext2_new_inode创建inode
+	     - 调用 new_inode在内存中分配一个inode结构
+	     - 根据位图在设备上分配一个inode(实际上这里根据位图分配了一个inode节点号)
+	     - 填充部分inode信息，包括mode字段，fsuid等等
+	   - 填充VFS层inode信息，包括inode->i_op、inode->f_op
+	   - 调用ext2_add_entry将dentry和inode号对应起来并且写入父目录的数据块中
+
+###2.2 关于文件创建的理解
+* 在目录parent下创建一个文件，这是因具体文件系统而异的，所以create具体由parent->inode->i_op->create来执行。在parent下创建文件，主要作的工作是分配inode号，然后使用这个inode号和文件名构成一个ext2_dir_entry_2结构写入parent的数据块中(由parent对应的inode号索引得到)。请注意，dentry和inode是VFS层的对象，它们仅存在于内存中,设备上存放的是ext2_dir_entry_2和ext2_inode。对于具体文件系统来说，访问和管理文件只需要inode，而dentry只是用于支持VFS层的。
+
+附注:分配inode的原则
+* 为了提高磁盘访问速度，所以将磁盘上同一盘面的块（扇区）被划分为一个块组来管理。并且另一方面，在创建一个文件时，它的inode和数据块应当也被分配到同一个块组内，因为inode和数据块的访问总是形影不离的。因此，，设备上的块组中存放的它的inode和数据块应当也被分配到同一个块组内，因为inode和数据块的访问总是形影不离的。因此，，设备上的块组中存放的ininode数量和数据块数量是成一定比例的。这个比例由文件平均大小得到的。比如说，系统上文件平均大小为fsizes，一个块组的总大小为gbsizes,一个数据块的大小为bsizes，则该块组能放下的文件数量为nf = gbsizes / fsizes。每个文件需要的数据块为nb = fsizes / bsizes。这样，inode和数据块的比例就为 nf : nb = gbsizes / bsizes : fsizes / bsizes。这样格式化了之后，在创建一个文件时，一旦块组内有空闲的inode的时候，很大概率上空闲的数据块也足以存放该inode对应的文件数据。
+* 当创建一个目录的时候，也希望该目录下的文件(目录下的子目录也是文件，看作一个文件来处理)都能处于同一个块组上，这样才能提高磁盘访问效率。同样的，每个目录下的文件数量也有一个统计值(系统平均值)，假设为N，创建目录时，一旦发现块组内的空闲节点小于N，则认为该块组放不下一个目录，这时候需要寻找另一个块组进行创建。

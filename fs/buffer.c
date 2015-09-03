@@ -1581,7 +1581,10 @@ static int __block_prepare_write(struct inode *inode, struct page *page,
 			continue;
 		if (block_start >= to)
 			break;
+		/*如果缓冲页面尚未映射到物理记录块，则需要分配一个物理记录块
+		 * 然后从设备中读入数据*/
 		if (!buffer_mapped(bh)) {
+			/**/
 			err = get_block(inode, block, bh, 1);
 			if (err)
 				goto out;
