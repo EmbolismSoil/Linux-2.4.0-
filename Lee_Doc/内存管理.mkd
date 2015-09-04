@@ -1,0 +1,247 @@
+#linux内存管理之数据结构
+
+***
+[TOC]
+
+##一、物理空间管理
+###1.1 页表项
+[[include /asm-i386/page.h: 39]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/include/asm-i386/page.h)
+```cpp 
+ 39 #if CONFIG_X86_PAE
+ 40 typedef struct { unsigned long pte_low, pte_high; } pte_t;
+ 41 typedef struct { unsigned long long pmd; } pmd_t;
+ 42 typedef struct { unsigned long long pgd; } pgd_t;
+ 43 #define pte_val(x)  ((x).pte_low | ((unsigned long long)(x).pte_high << 32))
+ 44 #else
+ 45 typedef struct { unsigned long pte_low; } pte_t;
+ 46 typedef struct { unsigned long pmd; } pmd_t;
+ 47 typedef struct { unsigned long pgd; } pgd_t;
+ 48 #define pte_val(x)  ((x).pte_low)
+ 49 #endif
+```
+其中pte_t为页表项，在i386当中，一个页的大小为4K，这意味着也表项的低12位是0，高20位是物理页的起始地址。所以低12位可以用来保存页面保护和访问权限信息，页面保护和访问权限信息被定义在pgprot_t中
+[[include/asm-i386/page.h : 52]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/include/asm-i386/page.h)
+```cpp
+ 52 typedef struct { unsigned long pgprot; } pgprot_t;
+```
+pgprot_t的低12位定义如下：
+[[include/asm-i386/pgtable.h : 152]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/include/asm-i386/pgtable.h)
+```cpp
+152 #define _PAGE_BIT_PRESENT   0
+153 #define _PAGE_BIT_RW        1
+154 #define _PAGE_BIT_USER      2
+155 #define _PAGE_BIT_PWT       3
+156 #define _PAGE_BIT_PCD       4
+157 #define _PAGE_BIT_ACCESSED  5
+158 #define _PAGE_BIT_DIRTY     6
+159 #define _PAGE_BIT_PSE       7   /* 4 MB (or 2MB) page, Pentium+, if present.. */
+160 #define _PAGE_BIT_GLOBAL    8   /* Global TLB entry PPro+ */
+161     
+162 #define _PAGE_PRESENT   0x001
+163 #define _PAGE_RW    0x002
+164 #define _PAGE_USER  0x004
+165 #define _PAGE_PWT   0x008
+166 #define _PAGE_PCD   0x010
+167 #define _PAGE_ACCESSED  0x020
+168 #define _PAGE_DIRTY 0x040
+169 #define _PAGE_PSE   0x080   /* 4 MB (or 2MB) page, Pentium+, if present.. */
+170 #define _PAGE_GLOBAL    0x100   /* Global TLB entry PPro+ */
+```
+将pgprot_t和pte_t的高20位合并即可得到真正的页表项，该操作有宏__make_pte来完成
+[[include/asm-i386/pgtable-2level.h : 61]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/include/asm-i386/pgtable-2level.h)
+```cpp
+ 61 #define __mk_pte(page_nr,pgprot) __pte(((page_nr) << PAGE_SHIFT) | pgprot_val(pgprot))
+```
+当MMU进行映射的时候，会首先检查P位，也就是_PAGE_BIT_PRESENT(BIT0)位，如果该位为1，则进行映射，否则就产生一个缺页中断。
+
+##1.2 物理页面管理对象page
+内核维护一个全局的mem_page的page数组，每个page代表着一个物理页面，整个数组内的page就代表了全部物理页面。在内核定义中，可以用pte_t高20位当成索引去访问mem_page数组，从而得到该物理页的page结构。page结构定义如下：
+[[include/linux/mm.h : 134]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/include/linux/mm.h)
+```cpp
+126 /*
+127  * Try to keep the most commonly accessed fields in single cache lines
+128  * here (16 bytes or greater).  This ordering should be particularly
+129  * beneficial on 32-bit processors.
+130  *
+131  * The first line is data used in page cache lookup, the second line
+132  * is used for linear searches (eg. clock algorithm scans). 
+133  */
+134 typedef struct page {
+135     struct list_head list;
+136     struct address_space *mapping;
+137     unsigned long index;
+138     struct page *next_hash;
+139     atomic_t count;
+140     unsigned long flags;    /* atomic flags, some possibly updated asynchronously */
+141     struct list_head lru;
+142     unsigned long age;
+143     wait_queue_head_t wait;
+144     struct page **pprev_hash;
+145     struct buffer_head * buffers;
+146     void *virtual; /* non-NULL if kmapped */
+147     struct zone_struct *zone;
+148 } mem_map_t;
+```
+如果页面的内容来自一个文件，index代表该页面在文件中的序号，当页面被交换出内存，但还保留内容作为缓冲时，index指名了页面的去向。
+系统中的每一个物理页面都对应了一个page结构，也就是说一个page结构是物理页面的*"登记信息"*，或者说*“管理信息”*。在系统初始化时，所有page结构被建立，并且page作为一个物理页面的管理结构，当一个page结构被分配出去的时候，就表示了一个物理页面被分配使用。
+
+##二、内存分区
+###2.1 过去的分区
+系统内存被分为两个区：
+* ZONE_DMA
+* ZONE_NORMAL  
+
+*（根据系统配置，还可以增加第三个区给ZONE_HIGHMEN，内核访问超过1G的物理空间）*
+这意味着mem_page数组中的page也被相应分为ZONE_DMA和ZONE_NORMAL两组，而既然已经分组了，就会有分组管理信息，故而每个内存区域具有一个区域管理结构：zone_struct。定义如下：
+[[include/linux/mmzone.h : 24]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/include/linux/mmzone.h)
+```cpp
+ 24 typedef struct zone_struct {
+ 25     /*
+ 26      * Commonly accessed fields:
+ 27      */
+ 28     spinlock_t      lock;
+ 29     unsigned long       offset;
+ 30     unsigned long       free_pages;
+ 31     unsigned long       inactive_clean_pages;
+ 32     unsigned long       inactive_dirty_pages;
+ 33     unsigned long       pages_min, pages_low, pages_high;
+ 34 
+ 35     /*
+ 36      * free areas of different sizes
+ 37      */
+ 38     struct list_head    inactive_clean_list;
+ 39     free_area_t     free_area[MAX_ORDER];
+ 40 
+ 41     /*
+ 42      * rarely used fields:
+ 43      */
+ 44     char            *name;
+ 45     unsigned long       size;
+ 46     /*
+ 47      * Discontig memory support fields.
+ 48      */
+ 49     struct pglist_data  *zone_pgdat;
+ 50     unsigned long       zone_start_paddr;
+ 51     unsigned long       zone_start_mapnr;
+ 52     struct page     *zone_mem_map;
+```
+其中39行的free_area为一组空闲区块队列，组内有“连续的空闲物理页面”和“离散的空闲物理页面”两种队列。因为分配内存的时候有可能要求分配连续的物理页，所以将连续的物理页和离散的物理页分开管理。而offset则表示该分区在mem_map中的起始号。
+
+###2.2 当下的分区情况
+但随着NUMA*(非均质储存结构)*的引入，分区发生了变化。NUMA指的是，在当下多处理器结构中，每个CPU都具有本地储存，称之为内存节点，而多个CPU之间又有共享的内存。CPU访问本地储存的速度要快于访问共享储存的速度，也就是说，在一个连续的物理地址上，储存器的访问速度不一致，这就叫做NUMA。在NUMA结构中，如果要分配几个连续的物理页，一般要求分配在质地相同的储存器内。为此，内核定义了一个pglist_data结构，每个pglist_data代表这一个内存节点，每个内存节点都可以拥有ZONE_DMA和ZONE_NORMAL（根据配置还可能有ZONE_HIGHMEN）两个区，也就意味这每个内存节点都有一个page数组和一个zone_t数组，用于管理该节点上两个区的所有page。*<u>总的来说，原来将整个物理空间分为三个区来管理的模式，现在变成了将整个物理空间分为若干内存节点，各个内存节点将节点上的所有物理空间进行分区管理</u>*。pglist_data定义如下：
+[[include/linux/mmzone.h : 79]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/include/linux/mmzone.h)
+```cpp
+ 79 typedef struct pglist_data {
+ 80     zone_t node_zones[MAX_NR_ZONES];
+ 81     zonelist_t node_zonelists[NR_GFPINDEX];
+ 82     struct page *node_mem_map;
+ 83     unsigned long *valid_addr_bitmap;
+ 84     struct bootmem_data *bdata;
+ 85     unsigned long node_start_paddr;
+ 86     unsigned long node_start_mapnr;
+ 87     unsigned long node_size;
+ 88     int node_id;
+ 89     struct pglist_data *node_next;
+ 90 } pg_data_t;
+```
+80： node_zones为该内存节点上的三个分区管理结构。
+81： node_zonelists为一个指向zone_t指针数组链表*(链表的每个节点上都挂着一个数组)*，链表上的每个节点包含一个指针数组，该数组的元素按照待定的次序指向每个储存节点的node_zones的数组。前面说过，在NUMA中分配物理页，往往要求在同一内存节点上分配，如果这时当前节点的空闲连续物理页无法满足分配，则可以通过这个指针数组按照0、1、2、3、4......的次序查找其它储存节点上的node_zones，直到找到一个可以满足分配的储存节点。指针数组中的元素排列次序，就称为一种分配策略。比如说有储存节点A、B、C、D、E。而node_zoneslist某节点上的指针数组元素排列次序为pA、pC、pD、pB。这个策略就规定了：要分配物理页的时候首先尝试从A分配，如果A不能满足，就查找B，如果B不能满足就查找C....而如果该点的指针数组为pC、pA、pD、pB，则这个策略规定：要分配物理页的时候首先尝试从C分配，如果C不能满足，就查找A，如果A不能满足就查找D....
+所以把node_zonelists称为分配策略链表也不为过。
+82： node_mem_map数组包含了该内存节点上的所有page结构。
+##三、 虚拟空间管理
+###3.1 进程虚存区域
+每一个进程都拥有自己的3G进程空间和1G共享的内核空间。很少会有进程占用到3G的空间，往往是占用多个离的虚存区域。虚存区域的抽象数据结构定义如下：
+[[include/linux/mm.h : 41]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/include/linux/mm.h)
+```cpp
+ 41 struct vm_area_struct {
+ 42     struct mm_struct * vm_mm;   /* VM area parameters */
+ 43     unsigned long vm_start;
+ 44     unsigned long vm_end;
+ 45 
+ 46     /* linked list of VM areas per task, sorted by address */
+ 47     struct vm_area_struct *vm_next;
+ 48 
+ 49     pgprot_t vm_page_prot;
+ 50     unsigned long vm_flags;
+ 51 
+ 52     /* AVL tree of VM areas per task, sorted by address */
+ 53     short vm_avl_height;
+ 54     struct vm_area_struct * vm_avl_left;
+ 55     struct vm_area_struct * vm_avl_right;
+ 56 
+ 57     /* For areas with an address space and backing store,
+ 58      * one of the address_space->i_mmap{,shared} lists,
+ 59      * for shm areas, the list of attaches, otherwise unused.
+ 60      */
+ 61     struct vm_area_struct *vm_next_share;
+ 62     struct vm_area_struct **vm_pprev_share;
+ 63 
+ 64     struct vm_operations_struct * vm_ops;
+ 65     unsigned long vm_pgoff;     /* offset in PAGE_SIZE units, *not* PAGE_CACHE_SIZE */
+ 66     struct file * vm_file;
+ 67     unsigned long vm_raend;
+ 68     void * vm_private_data;     /* was vm_pte (shared mem) */
+ 69 };
+```
+43： vm_start 该虚存区域的开始地址
+44： vm_end 该虚存区域的结束地址
+47： vm_next 用于将进程空间内所有的内存区域组成一个单项链表进行管理
+49： pgprot_t 页面保护权限，因为一个内存区域中只有一个用于描述页面访问权限pgprot_t这意味这在同意个区域中的所有页面访问权限是一致的。
+54~55:
+```cpp
+ 53     short vm_avl_height;
+ 54     struct vm_area_struct * vm_avl_left;
+ 55     struct vm_area_struct * vm_avl_right;
+```
+这三个成员用于将内存区域组成一棵AVL树，因为常常需要在进程空间中查找某个内存区域。如果用线性链表查找的方式，会影响效率。
+61： vm_next_share ？？？？
+62   vm_pprev_share ？？？
+64   vm_ops指向一个struct ，实际上是一个跳转表：
+```cpp
+120 struct vm_operations_struct {
+121     void (*open)(struct vm_area_struct * area);
+122     void (*close)(struct vm_area_struct * area);
+123     struct page * (*nopage)(struct vm_area_struct * area, unsigned long address, int write_access);
+124 }; 
+```
+该跳转表用于虚存区间的打开，关闭和建立，其中nopage在发生缺页中断的时候会被调用。
+###3.2 进程地址空间
+在vm_area_struct结构中有一个成员vm_mm指向了mm_struct结构，这个结构是整个进程虚存空间的数据抽象，它管理这进程中的所有vm_area_struct抽象，换句话mm_struct是一个更高层的数据结构。定义如下：
+[[include/linux/mm.h : 203]](https://github.com/EmbolismSoil/Linux-2.4.0-/blob/master/include/linux/sched.h)
+```cpp
+203 struct mm_struct {
+204     struct vm_area_struct * mmap;       /* list of VMAs */
+205     struct vm_area_struct * mmap_avl;   /* tree of VMAs */
+206     struct vm_area_struct * mmap_cache; /* last find_vma result */
+207     pgd_t * pgd;
+208     atomic_t mm_users;          /* How many users with user space? */
+209     atomic_t mm_count;          /* How many references to "struct mm_struct" (users count as 1) */
+210     int map_count;              /* number of VMAs */
+211     struct semaphore mmap_sem;
+212     spinlock_t page_table_lock;
+213 
+214     struct list_head mmlist;        /* List of all active mm's */
+215 
+216     unsigned long start_code, end_code, start_data, end_data;
+217     unsigned long start_brk, brk, start_stack;
+218     unsigned long arg_start, arg_end, env_start, env_end;
+219     unsigned long rss, total_vm, locked_vm;
+220     unsigned long def_flags;
+221     unsigned long cpu_vm_mask;
+222     unsigned long swap_cnt; /* number of pages to swap on next pass */
+223     unsigned long swap_address;
+224 
+225     /* Architecture-specific MM context */
+226     mm_context_t context;
+227 };
+```
+204: mmap作为进程的所虚存区域构成的链表的链表头。
+205: mmap_avl指向进程所有虚存区域构成的AVL树的根节点。
+206: mmap_cache指向最近一次使用的虚存空间。由于程序具有局部性，常常连续访问同一片区域的空间，所以这里记录了最近一次使用的虚存区域，是一种缓存机制。
+207： pgd指向了进程的页目录
+208～212：
+虽然每个进程只能拥有一个mm_struct,但是一个mm_struct却能为多个进程所用，最显著的例子就是父进程使用vfork创建子进程。这样就会涉及到资源进程和引用计数的问题，其中mm_users、mm_count、map_count作为引用计数，而mmap_sem、page_table_lock则用来保证访问的互斥。
+216～219：用于说明整个进程地址空间中各个段的起始和结束地址，比如代码段，数据段，栈段，环境变量段等等。*(注，这里的段是指镜像段，不能与段页管理中的段相混淆)*
+
+###3.3 进程地址空间和进程虚存区域的关系
+每个进程都拥有一份mm_struct，它是整个3G进程空间的数据抽象，而由于进程往往不会整个3G空间都使用，而是使用不同的离散虚存区域，并且每个离散区域的使用都不一样，比如说栈所在的区域和代码段所在的区域的使用就不一样，从而导致各个区域的属性、需要的管理操作都不一致，所以就将各个虚存区域提炼出来单独管理，然后就再将所有虚存区域组成一颗AVL树交由mm_struct统一管理。这中设计思想属于提炼差异，或者说提炼子类的思想。
