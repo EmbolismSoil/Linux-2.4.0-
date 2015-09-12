@@ -103,8 +103,12 @@ void * __ioremap(unsigned long phys_addr, unsigned long size, unsigned long flag
 	void * addr;
 	struct vm_struct * area;
 	unsigned long offset, last_addr;
+	/*
+	 * 入口参数检查
+	 * */
 
 	/* Don't allow wraparound or zero size */
+	/*地址不能为0，也不能大于32G*/
 	last_addr = phys_addr + size - 1;
 	if (!size || last_addr < phys_addr)
 		return NULL;
@@ -112,12 +116,19 @@ void * __ioremap(unsigned long phys_addr, unsigned long size, unsigned long flag
 	/*
 	 * Don't remap the low PCI/ISA area, it's always mapped..
 	 */
+	/*
+	 *0xA0000~0x100000区域是VGA和BIOS的位置，不能占用之。
+	 * */
 	if (phys_addr >= 0xA0000 && last_addr < 0x100000)
 		return phys_to_virt(phys_addr);
 
 	/*
 	 * Don't allow anybody to remap normal RAM that we're using..
 	 */
+	/*
+	 *不能映射正在使用的RAM空间,high_memory是RAM空间的上限，如果
+	 *phys_addr小于这个空间，说明试图映射到RAM空间
+	 * */
 	if (phys_addr < virt_to_phys(high_memory)) {
 		char *t_addr, *t_end;
 		struct page *page;
@@ -133,6 +144,9 @@ void * __ioremap(unsigned long phys_addr, unsigned long size, unsigned long flag
 	/*
 	 * Mappings have to be page-aligned
 	 */
+	/*
+	 * 映射必须是页对齐的
+	 * */
 	offset = phys_addr & ~PAGE_MASK;
 	phys_addr &= PAGE_MASK;
 	size = PAGE_ALIGN(last_addr) - phys_addr;
@@ -140,6 +154,9 @@ void * __ioremap(unsigned long phys_addr, unsigned long size, unsigned long flag
 	/*
 	 * Ok, go for it..
 	 */
+	/*
+	 *获取一个内核虚拟空间(地址在3G以上)
+	 * */
 	area = get_vm_area(size, VM_IOREMAP);
 	if (!area)
 		return NULL;

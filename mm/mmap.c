@@ -133,6 +133,7 @@ asmlinkage unsigned long sys_brk(unsigned long brk)
 		goto set_brk;
 
 	/* Always allow shrinking brk. */
+	/*如果新边界小于旧边界，则说明想要释放空间*/
 	if (brk <= mm->brk) {
 		if (!do_munmap(mm, newbrk, oldbrk-newbrk))
 			goto set_brk;
@@ -682,6 +683,11 @@ int do_munmap(struct mm_struct *mm, unsigned long addr, size_t len)
 	 * on the list.  If nothing is put on, nothing is affected.
 	 */
 	mpnt = find_vma_prev(mm, addr, &prev);
+	/*
+	 * 扫描vm_area_struct AVL树，试图查找该边界处于的虚存区域，如果返回的
+	 * 指针为NULL，或者该区间的其实地址大于addr+len，那么就说明想要解除
+	 * 映射的部分并没有映射，直接返回即可
+	 * */
 	if (!mpnt)
 		return 0;
 	/* we have  addr < mpnt->vm_end  */
@@ -699,12 +705,16 @@ int do_munmap(struct mm_struct *mm, unsigned long addr, size_t len)
 	 * and this is the last chance for an easy error exit.
 	 */
 	extra = kmem_cache_alloc(vm_area_cachep, SLAB_KERNEL);
+	/*解除映射之后，就会将原本的一个虚存空间一分为二，所以会多
+	 * 出来一个vm_area_struct，这里提前分配一个vm_area_struct
+	 * 结构*/
 	if (!extra)
 		return -ENOMEM;
 
 	npp = (prev ? &prev->vm_next : &mm->mmap);
 	free = NULL;
 	spin_lock(&mm->page_table_lock);
+	/*将解除映射的area从AVL移到一个free队列*/
 	for ( ; mpnt && mpnt->vm_start < addr+len; mpnt = *npp) {
 		*npp = mpnt->vm_next;
 		mpnt->vm_next = free;
