@@ -12,6 +12,7 @@
 #include <asm/ptrace.h>
 
 struct irqaction {
+	/*中断服务函数*/
 	void (*handler)(int, void *, struct pt_regs *);
 	unsigned long flags;
 	unsigned long mask;

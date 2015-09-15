@@ -439,6 +439,7 @@ void __init init_IRQ(void)
 {
 	int i;
 
+/*初始化8259中断控制器*/	
 #ifndef CONFIG_X86_VISWS_APIC
 	init_ISA_irqs();
 #else

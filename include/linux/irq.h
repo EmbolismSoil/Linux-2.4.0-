@@ -46,8 +46,9 @@ typedef struct hw_interrupt_type  hw_irq_controller;
  */
 typedef struct {
 	unsigned int status;		/* IRQ status */
-	hw_irq_controller *handler;
-	struct irqaction *action;	/* IRQ action list */
+	hw_irq_controller *handler; /*该操作集用于处理该队列，也就是说，该操作集对该IRQ，
+								  即该队列负责，而不是对某个具体的action负责*/
+	struct irqaction *action;	/* IRQ action list *//*用于具体中断服务程序的action链表*/
 	unsigned int depth;		/* nested irq disables */
 	spinlock_t lock;
 } ____cacheline_aligned irq_desc_t;

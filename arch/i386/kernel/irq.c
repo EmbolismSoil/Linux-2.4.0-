@@ -557,14 +557,21 @@ asmlinkage unsigned int do_IRQ(struct pt_regs regs)
 	 * 0 return value means that this irq is already being
 	 * handled by some other CPU. (or is disabled)
 	 */
+	/*获得中断号*/
 	int irq = regs.orig_eax & 0xff; /* high bits used in ret_from_ code  */
 	int cpu = smp_processor_id();
+	/*获得中断描述符*/
 	irq_desc_t *desc = irq_desc + irq;
 	struct irqaction * action;
 	unsigned int status;
 
 	kstat.irqs[cpu][irq]++;
 	spin_lock(&desc->lock);
+
+	/*
+	 * 有些中断控制器，如I8259，将中断请求上报到CPU之后，会等待
+	 * CPU返回一个应答信号，这里调用ack函数就是做这事
+	 * */
 	desc->handler->ack(irq);
 	/*
 	   REPLAY is when Linux resends an IRQ that was dropped earlier
@@ -577,7 +584,7 @@ asmlinkage unsigned int do_IRQ(struct pt_regs regs)
 	 * If the IRQ is disabled for whatever reason, we cannot
 	 * use the action we have.
 	 */
-	action = NULL;
+	action = NULL;/*如果有队列正在处理或者中断被关闭，则返回*/
 	if (!(status & (IRQ_DISABLED | IRQ_INPROGRESS))) {
 		action = desc->action;
 		status &= ~IRQ_PENDING; /* we commit to handling */
