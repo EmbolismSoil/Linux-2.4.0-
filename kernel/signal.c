@@ -772,6 +772,7 @@ void do_notify_parent(struct task_struct *tsk, int sig)
 	info.si_code = why;
 	info.si_status = status;
 
+	/*向父进程发送信号并且唤醒父进程，如果父进程正在睡眠的话*/
 	send_sig_info(sig, &info, tsk->p_pptr);
 	wake_up_parent(tsk->p_pptr);
 }

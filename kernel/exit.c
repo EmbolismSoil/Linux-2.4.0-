@@ -327,7 +327,8 @@ void exit_mm(struct task_struct *tsk)
 static void exit_notify(void)
 {
 	struct task_struct * p, *t;
-
+    
+	/*将所有子进程托付给init进程*/
 	forget_original_parent(current);
 	/*
 	 * Check to see if any process groups have become orphaned
@@ -338,9 +339,14 @@ static void exit_notify(void)
 	 * and we were the only connection outside, so our pgrp
 	 * is about to become orphaned.
 	 */
-	 
-	t = current->p_pptr;
 	
+	/*
+	 * @ 进程中p_pptr指向养父进程
+	 *   o_pptr指向生父进程
+	 * */
+	t = current->p_pptr;
+
+	/*如果当前进程与父进程处于不同的进程组，但处于相同的会话内，就像进程组发送信号*/
 	if ((t->pgrp != current->pgrp) &&
 	    (t->session == current->session) &&
 	    will_become_orphaned_pgrp(current->pgrp, current) &&
@@ -382,6 +388,7 @@ static void exit_notify(void)
 	 */
 
 	write_lock_irq(&tasklist_lock);
+	/*变成僵尸进程，然后通知父进程，子进程已经结束生命*/
 	current->state = TASK_ZOMBIE;
 	do_notify_parent(current, current->exit_signal);
 	while (current->p_cptr != NULL) {
@@ -421,24 +428,29 @@ static void exit_notify(void)
 NORET_TYPE void do_exit(long code)
 {
 	struct task_struct *tsk = current;
-
+	
+	/*中断中不应退出进程*/
 	if (in_interrupt())
 		panic("Aiee, killing interrupt handler!");
 	if (!tsk->pid)
 		panic("Attempted to kill the idle task!");
-	if (tsk->pid == 1)
+	if (tsk->pid == 1)		
 		panic("Attempted to kill init!");
 	tsk->flags |= PF_EXITING;
+	/*删除进程的实时定时器*/
 	del_timer_sync(&tsk->real_timer);
 
 fake_volatile:
 #ifdef CONFIG_BSD_PROCESS_ACCT
 	acct_process(code);
 #endif
+	/*释放用户空间*/
 	__exit_mm(tsk);
 
 	lock_kernel();
+	/*如果当前进程正在睡眠于某个等待队列上，就将其脱链*/
 	sem_exit();
+	/*释放已打开文件*/
 	__exit_files(tsk);
 	__exit_fs(tsk);
 	exit_sighand(tsk);

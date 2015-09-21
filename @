@@ -144,18 +144,12 @@ static inline int goodness(struct task_struct * p, int this_cpu, struct mm_struc
 	 * Also, dont trigger a counter recalculation.
 	 */
 	weight = -1;
-	/*进程可以设置调度策略为SCHED_YIELD即“礼让”策略，这时候它的权值为-1,权值相当低*/
 	if (p->policy & SCHED_YIELD)
 		goto out;
 
 	/*
 	 * Non-RT process - normal case first.
 	 */
-
-	/*对于调度策略为SCHED_OTHER的进程，没有实时性要求，它的权值仅仅取决于
-	 * 时间片的剩余和它的nice值，nice（谦让）是一个负向的权值，也就是说
-	 * 数值上nice越小，则优先级越高，总的权值 = 时间片剩余 + (20 - nice)
-	 * */
 	if (p->policy == SCHED_OTHER) {
 		/*
 		 * Give the process a first-approximation goodness value
@@ -187,21 +181,9 @@ static inline int goodness(struct task_struct * p, int this_cpu, struct mm_struc
 	 * runqueue (taking priorities within processes
 	 * into account).
 	 */
-	/*
-	 *对于实时进程，也就是SCHED_FIFO或者SCHED_RR调度策略，
-	 *具有一个实时优先级，总的权值仅仅取决于该实时优先级，
-	 *总的权值 = 1000 + 实时优先级。可见实时进程会获得很
-	 *高的高考加分，加1000分咧。
-	 * */
 	weight = 1000 + p->rt_priority;
 out:
 	return weight;
-
-	/*从上述代码可以看出，对于实时进程来说，nice值是对其调度权值没有影响的
-	 * 也就是说，调度进程运行的时候，nice值不会影响该实时进程是否获得CPU使用
-	 * 权。但是nice值会影响SCHED_RR策略的时间片配额
-	 *nice值对SCHED_FIFO策略完全没有任何影响
-	 * */
 }
 
 /*
@@ -561,16 +543,10 @@ handle_softirq_back:
 	spin_lock_irq(&runqueue_lock);
 
 	/* move an exhausted RR process to be last.. */
-	/*如果调度策略为SCHED_RR,则移动到RR队列尾*/
 	if (prev->policy == SCHED_RR)
 		goto move_rr_last;
 move_rr_back:
 
-	/*检查进程的意愿状态，即想要变为哪种状态。
-	 * 如果进程将要以TASK_INTURRUPTIBLE状态放弃
-	 * CPU的使用权，则先检查是否有信号需要处理，
-	 * 如果有信号需要处理，则转而处理信号然后
-	 * 直接退出*/
 	switch (prev->state) {
 		case TASK_INTERRUPTIBLE:
 			if (signal_pending(prev)) {
@@ -591,28 +567,22 @@ repeat_schedule:
 	/*
 	 * Default process to select..
 	 */
-	/*按照策略选择等待调度的进程中的最佳候选进程*/
 	next = idle_task(this_cpu);
 	c = -1000;
 	if (prev->state == TASK_RUNNING)
 		goto still_running;
 
 still_running_back:
-	/*遍历所有处于就绪状态的进程*/
 	list_for_each(tmp, &runqueue_head) {
 		p = list_entry(tmp, struct task_struct, run_list);
 		if (can_schedule(p, this_cpu)) {
-			/*遍历到的每个进程都计算其权值*/
 			int weight = goodness(p, this_cpu, prev->active_mm);
 			if (weight > c)
-				/*比较取得最大权值的那个进程*/
 				c = weight, next = p;
 		}
 	}
 
 	/* Do we need to re-calculate counters? */
-	/*如果全部就绪进程的权值都已经降到0了，那就开始重新计算每个进程的权值
-	 * */
 	if (!c)
 		goto recalculate;
 	/*
@@ -662,23 +632,13 @@ still_running_back:
 	{
 		struct mm_struct *mm = next->mm;
 		struct mm_struct *oldmm = prev->active_mm;
-		/*如果将要被投入运行的进程是一个内核进程，则没有用户空间
-		 * 也就是说mm = NULL,这时候就向前一个进程借用一个active_mm,
-		 * 这个active_mm是内核空间映射。因为每个进程的内核空间映射都是
-		 * 一致的，所以可用之*/
 		if (!mm) {
 			if (next->active_mm) BUG();
 			next->active_mm = oldmm;
 			atomic_inc(&oldmm->mm_count);
 			enter_lazy_tlb(oldmm, next, this_cpu);
 		} else {
-			/*如果进程拥有自己的mm结构，那必然等于active_mm结构*/
 			if (next->active_mm != mm) BUG();
-			/*进行进程空间映射的切换。
-			 *进程切换时，分两部分，一部分是地址映射的切换，
-			 * 另一部分是运行现场的切换。地址的切换仅仅是把
-			 * mm中的映射表物理地址装入CR3。
-			 * */
 			switch_mm(oldmm, mm, next, this_cpu);
 		}
 
@@ -692,7 +652,6 @@ still_running_back:
 	 * This just switches the register state and the
 	 * stack.
 	 */
-	/*现场切换*/
 	switch_to(prev, next, prev);
 	__schedule_tail(prev);
 
