@@ -307,6 +307,10 @@ static int rm_sig_from_queue(int sig, struct task_struct *t)
  */
 int bad_signal(int sig, struct siginfo *info, struct task_struct *t)
 {
+	/*
+	 *sig_code用于区分不同的中断源，信号只能发送给同意对话中的
+	 *进程，或者同一个用户的进程，除非发送信号的进程得到root权限
+	 * */
 	return (!info || ((unsigned long)info != 1 && SI_FROMUSER(info)))
 	    && ((sig != SIGCONT) || (current->session != t->session))
 	    && (current->euid ^ t->suid) && (current->euid ^ t->uid)
@@ -494,6 +498,7 @@ static int deliver_signal(int sig, struct siginfo *info, struct task_struct *t)
 {
 	int retval = send_signal(sig, info, &t->pending);
 
+	/*如果信号没有被屏蔽且进程正在休眠，则唤醒进程*/
 	if (!retval && !sigismember(&t->blocked, sig))
 		signal_wake_up(t);
 
@@ -506,7 +511,7 @@ send_sig_info(int sig, struct siginfo *info, struct task_struct *t)
 	unsigned long flags;
 	int ret;
 
-
+	/*开始进行参数检查*/
 #if DEBUG_SIG
 printk("SIG queue (%s:%d): %d ", t->comm, t->pid, sig);
 #endif
@@ -524,14 +529,14 @@ printk("SIG queue (%s:%d): %d ", t->comm, t->pid, sig);
 	ret = 0;
 	if (!sig || !t->sig)
 		goto out_nolock;
-
+	/*参数检查结束*/
 	spin_lock_irqsave(&t->sigmask_lock, flags);
 	handle_stop_signal(sig, t);
 
 	/* Optimize away the signal, if it's a signal that can be
 	   handled immediately (ie non-blocked and untraced) and
 	   that is ignored (either explicitly or by default).  */
-
+    /*查看进程控制块中的blocked位图，看该信号是否被忽略*/
 	if (ignored_signal(sig, t))
 		goto out;
 
@@ -541,6 +546,7 @@ printk("SIG queue (%s:%d): %d ", t->comm, t->pid, sig);
 	if (sig < SIGRTMIN && sigismember(&t->pending.signal, sig))
 		goto out;
 
+	/*开始投递*/
 	ret = deliver_signal(sig, info, t);
 out:
 	spin_unlock_irqrestore(&t->sigmask_lock, flags);
@@ -657,9 +663,11 @@ kill_proc_info(int sig, struct siginfo *info, pid_t pid)
 
 static int kill_something_info(int sig, struct siginfo *info, int pid)
 {
+	/*如果pid = 0则将信号发送到整个进程组*/
 	if (!pid) {
 		return kill_pg_info(sig, info, current->pgrp);
 	} else if (pid == -1) {
+		/*如果pid = -1就将信号发送到所有进程*/
 		int retval = 0, count = 0;
 		struct task_struct * p;
 
@@ -674,9 +682,11 @@ static int kill_something_info(int sig, struct siginfo *info, int pid)
 		}
 		read_unlock(&tasklist_lock);
 		return count ? retval : -ESRCH;
+	/*如果pid < 0 则发送到pid = abs(pid)的进程中*/
 	} else if (pid < 0) {
 		return kill_pg_info(sig, info, -pid);
 	} else {
+	/*如果pid > 0 则发送到pid = pid 的进程中*/
 		return kill_proc_info(sig, info, pid);
 	}
 }
@@ -1014,6 +1024,7 @@ do_sigaction(int sig, const struct k_sigaction *act, struct k_sigaction *oact)
 {
 	struct k_sigaction *k;
 
+	/*不允许改变SIGKILL 和SIGSTOP的hanlder, 因为这两个信号需要内核进行特殊处理*/
 	if (sig < 1 || sig > _NSIG ||
 	    (act && (sig == SIGKILL || sig == SIGSTOP)))
 		return -EINVAL;
@@ -1026,7 +1037,9 @@ do_sigaction(int sig, const struct k_sigaction *act, struct k_sigaction *oact)
 		*oact = *k;
 
 	if (act) {
+		/*安装中断*/
 		*k = *act;
+		/*SIGKILL和SIGSTOP也是不可屏蔽的，这里要清除屏蔽*/
 		sigdelsetmask(&k->sa.sa_mask, sigmask(SIGKILL) | sigmask(SIGSTOP));
 
 		/*
@@ -1045,7 +1058,11 @@ do_sigaction(int sig, const struct k_sigaction *act, struct k_sigaction *oact)
 		 * reaping, while SIG_DFL is explicitly said by POSIX to force
 		 * the signal to be ignored.
 		 */
-
+		
+		/*如果新设置的hanlder为SIG_IGN或者DFL，且被设置的信号为SIGCONT SIGCHLD SIGWINGCH
+		 *则将已到达的该信号丢弃，因为这些信号与系统管理紧密相关，需要即时更新。
+		 *
+		 * */
 		if (k->sa.sa_handler == SIG_IGN
 		    || (k->sa.sa_handler == SIG_DFL
 			&& (sig == SIGCONT ||
