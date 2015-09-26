@@ -10,7 +10,11 @@ struct ipc_kludge {
 	struct msgbuf *msgp;
 	long msgtyp;
 };
-
+/*
+ *SEM为信号量设置的
+ *MSG为报文传递设置的
+ *SHM为共享内存设置的
+ * */
 #define SEMOP		 1
 #define SEMGET		 2
 #define SEMCTL		 3

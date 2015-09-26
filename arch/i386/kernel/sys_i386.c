@@ -1,4 +1,4 @@
-/*
+*
  * linux/arch/i386/kernel/sys_i386.c
  *
  * This file contains various random system calls that

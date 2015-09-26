@@ -179,6 +179,7 @@ asmlinkage int sys_ptrace(long request, long pid, long addr, long data)
 		/* the same process cannot be attached many times */
 		if (child->ptrace & PT_PTRACED)
 			goto out_tsk;
+		/*置位PT_PTRACED，执行跟踪*/
 		child->ptrace |= PT_PTRACED;
 
 		write_lock_irq(&tasklist_lock);

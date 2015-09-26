@@ -797,13 +797,8 @@ retry:
 
 	tmp = msq->q_messages.next;
 	found_msg=NULL;
-	/*遍历队列取出报文*/
 	while (tmp != &msq->q_messages) {
 		msg = list_entry(tmp,struct msg_msg,m_list);
-		/*测试条件是否满足
-		 * 如果msgtyp >= 0，则查找到一个msg->m_type == msgtyp的报文将其返回
-		 * 如果msgtyp < 0，则查找到一个msg->m_type < msgtype的最小值的报文将其返回
-		 * */
 		if(testmsg(msg,msgtyp,mode)) {
 			found_msg = msg;
 			if(mode == SEARCH_LESSEQUAL && msg->m_type != 1) {
@@ -818,15 +813,10 @@ retry:
 	}
 	if(found_msg) {
 		msg=found_msg;
-
-		/*如果查找到了报文，且用户提供的缓冲区大小不够大，
-		 * 有设置了不能截断的标志，则返回出错码*/
 		if ((msgsz < msg->m_ts) && !(msgflg & MSG_NOERROR)) {
 			err=-E2BIG;
 			goto out_unlock;
 		}
-
-		/*从报文队列中将报文取出*/
 		list_del(&msg->m_list);
 		msq->q_qnum--;
 		msq->q_rtime = CURRENT_TIME;
@@ -834,8 +824,6 @@ retry:
 		msq->q_cbytes -= msg->m_ts;
 		atomic_sub(msg->m_ts,&msg_bytes);
 		atomic_dec(&msg_hdrs);
-
-		/*如果有进程正在等待发送报文，则唤醒进程*/
 		ss_wakeup(&msq->q_senders,0);
 		msg_unlock(msqid);
 out_success:
@@ -852,13 +840,10 @@ out_success:
 		/* no message waiting. Prepare for pipelined
 		 * receive.
 		 */
-		/*如果没有查找到报文，且设置了非阻塞方式访问，则立即返回出错码*/
 		if (msgflg & IPC_NOWAIT) {
 			err=-ENOMSG;
 			goto out_unlock;
 		}
-
-		/*否则进程睡眠*/
 		list_add_tail(&msr_d.r_list,&msq->q_receivers);
 		msr_d.r_tsk = current;
 		msr_d.r_msgtype = msgtyp;
